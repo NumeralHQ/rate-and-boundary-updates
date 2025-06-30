@@ -11,17 +11,20 @@ JOB_FOLDER = os.path.join(BASE_DIR, "job")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
 
 # --- Job Configuration ---
-# For Phase 1, we only have one job type
 JOB_TYPE_MAPPING = {
     "1": {
         "name": "Rate Update",
         "file_prefix": "rate_update"
     },
     "2": {
+        "name": "New Tax",
+        "file_prefix": "new_tax"
+    },
+    "3": {
         "name": "New Jurisdiction",
         "file_prefix": "new_jurisdiction"
     },
-    "3": {
+    "4": {
         "name": "Jurisdiction Update",
         "file_prefix": "jurisdiction_update"
     }
@@ -36,4 +39,30 @@ DETAIL_TABLE_SCHEMA = [
     'report_to', 'max_tax', 'unit_type', 'max_type', 'thresh_type',
     'unit_and_or_tax', 'formula', 'tier', 'tax_rate', 'min_tax_base',
     'max_tax_base', 'fee', 'min_unit_base', 'max_unit_base'
-] 
+]
+
+# --- New Tax Job Configuration ---
+NEW_TAX_DEFAULTS = {
+    'tax_cat': '01',
+    'pass_flag': '01',
+    'pass_type': '',  # Leave blank
+    'base_type': '00',
+    'date_flag': '02',
+    'rounding': '00',
+    'location': '',   # Leave blank
+    'report_to': None,  # Leave blank
+    'max_tax': 0,
+    'unit_type': '99',
+    'max_type': '99',
+    'thresh_type': '09',
+    'unit_and_or_tax': '',  # Leave blank
+    'formula': '01',
+    'tier': 0,
+    'min_tax_base': 0,
+    'max_tax_base': 0,
+    'fee': 0,
+    'min_unit_base': 0,
+    'max_unit_base': 0
+}
+
+NEW_TAX_REQUIRED_FIELDS = ['tax_type', 'tax_rate', 'tax_auth_id', 'description'] 

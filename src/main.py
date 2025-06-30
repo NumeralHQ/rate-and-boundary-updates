@@ -49,6 +49,247 @@ def get_effective_date_from_user():
     
     return None
 
+# --- Processing Functions ---
+def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date: datetime.datetime) -> list:
+    """
+    Process rate update job with existing logic.
+    Returns list of output rows with status tracking.
+    """
+    output_rows = []
+    
+    print("\nProcessing rows...")
+    
+    for index, job_row in job_df.iterrows():
+        row_number = index + 1
+        print(f"Processing row {row_number}/{len(job_df)}", end="\r")
+        
+        # Validate required fields
+        if pd.isna(job_row.get('tax_type')):
+            logger.log_error(f"Row {row_number}: Missing required field 'tax_type'. Skipping.", 
+                            {"row_number": row_number, "row_data": job_row.to_dict()})
+            continue
+        
+        if pd.isna(job_row.get('tax_cat')):
+            logger.log_error(f"Row {row_number}: Missing required field 'tax_cat'. Skipping.", 
+                            {"row_number": row_number, "row_data": job_row.to_dict()})
+            continue
+        
+        if pd.isna(job_row.get('new_rate')):
+            logger.log_error(f"Row {row_number}: Missing required field 'new_rate'. Skipping.", 
+                            {"row_number": row_number, "row_data": job_row.to_dict()})
+            continue
+        
+        # Get list of geocodes from db_handler.
+        geocodes = db_handler.get_geocodes_from_db(db_connection, job_row)
+        
+        # If no geocodes, log an error and continue to next row.
+        if not geocodes:
+            logger.log_error(f"Row {row_number}: No geocodes found for criteria. Skipping.", 
+                            {"row_number": row_number, "criteria": job_row.to_dict()})
+            continue
+        
+        # Get matching detail rows from db_handler.
+        # Ensure tax_type and tax_cat are formatted as 2-digit strings (e.g., 4 -> "04")
+        tax_type_raw = job_row['tax_type']
+        tax_cat_raw = job_row['tax_cat']
+        
+        if pd.notna(tax_type_raw):
+            # Convert to string and pad with leading zero if needed
+            tax_type_formatted = str(int(tax_type_raw)).zfill(2)
+        else:
+            tax_type_formatted = ""
+        
+        if pd.notna(tax_cat_raw):
+            # Convert to string and pad with leading zero if needed
+            tax_cat_formatted = str(int(tax_cat_raw)).zfill(2)
+        else:
+            tax_cat_formatted = ""
+        
+        detail_df = db_handler.get_detail_rows_from_db(
+            db_connection, 
+            geocodes, 
+            tax_type_formatted,
+            tax_cat_formatted,
+            job_row.get('description')
+        )
+        
+        if detail_df.empty:
+            logger.log_error(f"Row {row_number}: No detail rows found for geocodes, tax_type, and tax_cat. Skipping.", 
+                             {"row_number": row_number, "geocodes": geocodes, 
+                              "tax_type_raw": job_row['tax_type'], "tax_type_formatted": tax_type_formatted,
+                              "tax_cat_raw": job_row['tax_cat'], "tax_cat_formatted": tax_cat_formatted})
+            continue
+        
+        # Process each detail row
+        for _, detail_row in detail_df.iterrows():
+            # Initialize status tracking for this output row
+            status_issues = []
+            
+            # Rate Validation: Compare job_row['old_rate'] / 100 with detail_row['tax_rate']
+            if pd.notna(job_row.get('old_rate')):
+                try:
+                    csv_old_rate = Decimal(str(job_row['old_rate'])) / 100
+                    db_tax_rate = Decimal(str(detail_row['tax_rate']))
+                    
+                    if csv_old_rate != db_tax_rate:
+                        # Log to errors.json as before
+                        logger.log_warning(
+                            f"Row {row_number}: Rate mismatch for geocode {detail_row['geocode']}. "
+                            f"CSV old_rate: {csv_old_rate}, DB tax_rate: {db_tax_rate}",
+                            {
+                                "row_number": row_number,
+                                "geocode": detail_row['geocode'],
+                                "csv_old_rate": float(csv_old_rate),
+                                "db_tax_rate": float(db_tax_rate)
+                            }
+                        )
+                        # Add to status for this output row
+                        status_issues.append("Warning: rate mismatch")
+                        
+                except (ValueError, TypeError) as e:
+                    # Log to errors.json as before
+                    logger.log_warning(f"Row {row_number}: Error when comparing rates: {str(e)}", 
+                                       {"row_number": row_number, "error": str(e)})
+                    # Add to status for this output row
+                    status_issues.append("Warning: failed to compare rates")
+            
+            # Create a copy of the detail_row and update fields
+            new_row = detail_row.copy()
+            
+            # Set 'effective' to the user-specified date in the correct format: 'YYYY-MM-DD 00:00:00.000'
+            new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+            
+            # Set 'tax_rate' to job_row['new_rate'] / 100
+            # Note: new_rate is already validated as non-null in the required fields check
+            try:
+                new_rate_decimal = Decimal(str(job_row['new_rate'])) / 100
+                new_row['tax_rate'] = float(new_rate_decimal)
+            except (ValueError, TypeError) as e:
+                # Log to errors.json as before
+                logger.log_error(f"Row {row_number}: Invalid new_rate value: {job_row.get('new_rate')}", 
+                                 {"row_number": row_number, "new_rate": job_row.get('new_rate'), "error": str(e)})
+                # Add to status for this output row
+                status_issues.append("Error: invalid new_rate")
+                continue
+            
+            # Set status based on issues encountered
+            if status_issues:
+                new_row['status'] = '\n'.join(status_issues)
+            else:
+                new_row['status'] = 'Success'
+            
+            # Append the new, updated row to the output list
+            output_rows.append(new_row)
+    
+    return output_rows
+
+def process_new_tax_job(db_connection, job_df: pd.DataFrame, effective_date: datetime.datetime) -> list:
+    """
+    Process new tax job with field defaulting and multiple geocode handling.
+    Returns list of output rows with status tracking.
+    """
+    output_rows = []
+    
+    print("\nProcessing rows...")
+    
+    for index, job_row in job_df.iterrows():
+        row_number = index + 1
+        print(f"Processing row {row_number}/{len(job_df)}", end="\r")
+        
+        # Validate required fields for new tax job
+        required_fields_valid = True
+        for field in config.NEW_TAX_REQUIRED_FIELDS:
+            if pd.isna(job_row.get(field)):
+                logger.log_error(f"Row {row_number}: Missing required field '{field}'. Skipping.", 
+                               {"row_number": row_number, "row_data": job_row.to_dict()})
+                required_fields_valid = False
+                break
+        
+        if not required_fields_valid:
+            continue
+        
+        # Get list of geocodes using enhanced lookup for new tax
+        geocodes = db_handler.get_geocodes_for_new_tax(db_connection, job_row)
+        
+        # If no geocodes found, log error and continue
+        if not geocodes:
+            logger.log_error(f"Row {row_number}: No geocodes found for criteria. Skipping.", 
+                           {"row_number": row_number, "criteria": job_row.to_dict()})
+            continue
+        
+        # Process each geocode found - create one output row per geocode
+        for geocode in geocodes:
+            # Initialize status tracking for this output row
+            status_issues = []
+            
+            # Create new detail row from scratch
+            new_row = {}
+            
+            # Set geocode
+            new_row['geocode'] = geocode
+            
+            # Set values from job CSV or apply defaults
+            for field in config.DETAIL_TABLE_SCHEMA:
+                if field == 'status':
+                    continue  # Handle status separately
+                elif field == 'geocode':
+                    continue  # Already set above
+                elif field == 'effective':
+                    # Handle effective date precedence
+                    if pd.notna(job_row.get('effective')) and str(job_row.get('effective')).strip():
+                        try:
+                            # Parse CSV date - assume MM/DD/YYYY format like user input
+                            csv_date_str = str(job_row['effective']).strip()
+                            parsed_date = datetime.datetime.strptime(csv_date_str, '%m/%d/%Y')
+                            new_row['effective'] = parsed_date.strftime('%Y-%m-%d 00:00:00.000')
+                        except ValueError:
+                            # If can't parse CSV date, use user provided date and add warning
+                            new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+                            status_issues.append("Warning: invalid effective date format")
+                    else:
+                        # Use user provided effective date (no warning per user request)
+                        new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+                elif field in job_row and pd.notna(job_row[field]):
+                    # Use value from job CSV
+                    value = job_row[field]
+                    
+                    # Apply 2-digit formatting for specific fields
+                    if field in ['tax_type', 'tax_cat', 'pass_flag', 'base_type', 'date_flag', 
+                                'rounding', 'unit_type', 'max_type', 'thresh_type', 'formula']:
+                        try:
+                            new_row[field] = str(int(value)).zfill(2)
+                        except (ValueError, TypeError):
+                            new_row[field] = str(value).zfill(2)
+                    elif field == 'tax_rate':
+                        # Convert percentage to decimal
+                        try:
+                            tax_rate_decimal = Decimal(str(value)) / 100
+                            new_row[field] = float(tax_rate_decimal)
+                        except (ValueError, TypeError) as e:
+                            logger.log_warning(f"Row {row_number}: Invalid tax_rate value: {value}", 
+                                             {"row_number": row_number, "tax_rate": value, "error": str(e)})
+                            status_issues.append("Warning: invalid tax_rate")
+                            new_row[field] = 0  # Default fallback
+                    else:
+                        new_row[field] = value
+                else:
+                    # Apply default value
+                    if field in config.NEW_TAX_DEFAULTS:
+                        new_row[field] = config.NEW_TAX_DEFAULTS[field]
+                    else:
+                        new_row[field] = None  # For fields not in defaults
+            
+            # Set status based on issues encountered
+            if status_issues:
+                new_row['status'] = '\n'.join(status_issues)
+            else:
+                new_row['status'] = 'Success'
+            
+            # Append the new row to output list
+            output_rows.append(new_row)
+    
+    return output_rows
+
 # --- Main Application Logic ---
 def run():
     db_connection = None
@@ -125,130 +366,16 @@ def run():
         # Initialize an empty list for the final output rows.
         output_rows = []
         
-        # 5. Main Processing Loop:
-        print("\nProcessing rows...")
+        # 5. Route to appropriate processing function based on job type
+        print("\nProcessing job...")
         
-        for index, job_row in job_df.iterrows():
-            row_number = index + 1
-            print(f"Processing row {row_number}/{len(job_df)}", end="\r")
-            
-            # Validate required fields
-            if pd.isna(job_row.get('tax_type')):
-                logger.log_error(f"Row {row_number}: Missing required field 'tax_type'. Skipping.", 
-                                {"row_number": row_number, "row_data": job_row.to_dict()})
-                continue
-            
-            if pd.isna(job_row.get('tax_cat')):
-                logger.log_error(f"Row {row_number}: Missing required field 'tax_cat'. Skipping.", 
-                                {"row_number": row_number, "row_data": job_row.to_dict()})
-                continue
-            
-            if pd.isna(job_row.get('new_rate')):
-                logger.log_error(f"Row {row_number}: Missing required field 'new_rate'. Skipping.", 
-                                {"row_number": row_number, "row_data": job_row.to_dict()})
-                continue
-            
-            # Get list of geocodes from db_handler.
-            geocodes = db_handler.get_geocodes_from_db(db_connection, job_row)
-            
-            # If no geocodes, log a warning and continue to next row.
-            if not geocodes:
-                logger.log_warning(f"Row {row_number}: No geocodes found for criteria. Skipping.", 
-                                   {"row_number": row_number, "criteria": job_row.to_dict()})
-                continue
-            
-            # Get matching detail rows from db_handler.
-            # Ensure tax_type and tax_cat are formatted as 2-digit strings (e.g., 4 -> "04")
-            tax_type_raw = job_row['tax_type']
-            tax_cat_raw = job_row['tax_cat']
-            
-            if pd.notna(tax_type_raw):
-                # Convert to string and pad with leading zero if needed
-                tax_type_formatted = str(int(tax_type_raw)).zfill(2)
-            else:
-                tax_type_formatted = ""
-            
-            if pd.notna(tax_cat_raw):
-                # Convert to string and pad with leading zero if needed
-                tax_cat_formatted = str(int(tax_cat_raw)).zfill(2)
-            else:
-                tax_cat_formatted = ""
-            
-            detail_df = db_handler.get_detail_rows_from_db(
-                db_connection, 
-                geocodes, 
-                tax_type_formatted,
-                tax_cat_formatted,
-                job_row.get('description')
-            )
-            
-            if detail_df.empty:
-                logger.log_error(f"Row {row_number}: No detail rows found for geocodes, tax_type, and tax_cat. Skipping.", 
-                                 {"row_number": row_number, "geocodes": geocodes, 
-                                  "tax_type_raw": job_row['tax_type'], "tax_type_formatted": tax_type_formatted,
-                                  "tax_cat_raw": job_row['tax_cat'], "tax_cat_formatted": tax_cat_formatted})
-                continue
-            
-            # Process each detail row
-            for _, detail_row in detail_df.iterrows():
-                # Initialize status tracking for this output row
-                status_issues = []
-                
-                # Rate Validation: Compare job_row['old_rate'] / 100 with detail_row['tax_rate']
-                if pd.notna(job_row.get('old_rate')):
-                    try:
-                        csv_old_rate = Decimal(str(job_row['old_rate'])) / 100
-                        db_tax_rate = Decimal(str(detail_row['tax_rate']))
-                        
-                        if csv_old_rate != db_tax_rate:
-                            # Log to errors.json as before
-                            logger.log_warning(
-                                f"Row {row_number}: Rate mismatch for geocode {detail_row['geocode']}. "
-                                f"CSV old_rate: {csv_old_rate}, DB tax_rate: {db_tax_rate}",
-                                {
-                                    "row_number": row_number,
-                                    "geocode": detail_row['geocode'],
-                                    "csv_old_rate": float(csv_old_rate),
-                                    "db_tax_rate": float(db_tax_rate)
-                                }
-                            )
-                            # Add to status for this output row
-                            status_issues.append("Warning: rate mismatch")
-                            
-                    except (ValueError, TypeError) as e:
-                        # Log to errors.json as before
-                        logger.log_warning(f"Row {row_number}: Error when comparing rates: {str(e)}", 
-                                           {"row_number": row_number, "error": str(e)})
-                        # Add to status for this output row
-                        status_issues.append("Warning: failed to compare rates")
-                
-                # Create a copy of the detail_row and update fields
-                new_row = detail_row.copy()
-                
-                # Set 'effective' to the user-specified date in the correct format: 'YYYY-MM-DD 00:00:00.000'
-                new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
-                
-                # Set 'tax_rate' to job_row['new_rate'] / 100
-                # Note: new_rate is already validated as non-null in the required fields check
-                try:
-                    new_rate_decimal = Decimal(str(job_row['new_rate'])) / 100
-                    new_row['tax_rate'] = float(new_rate_decimal)
-                except (ValueError, TypeError) as e:
-                    # Log to errors.json as before
-                    logger.log_error(f"Row {row_number}: Invalid new_rate value: {job_row.get('new_rate')}", 
-                                     {"row_number": row_number, "new_rate": job_row.get('new_rate'), "error": str(e)})
-                    # Add to status for this output row
-                    status_issues.append("Error: invalid new_rate")
-                    continue
-                
-                # Set status based on issues encountered
-                if status_issues:
-                    new_row['status'] = '\n'.join(status_issues)
-                else:
-                    new_row['status'] = 'Success'
-                
-                # Append the new, updated row to the output list
-                output_rows.append(new_row)
+        if job_prefix == "rate_update":
+            output_rows = process_rate_update_job(db_connection, job_df, effective_date)
+        elif job_prefix == "new_tax":
+            output_rows = process_new_tax_job(db_connection, job_df, effective_date)
+        else:
+            logger.log_error(f"Unsupported job type: {job_prefix}", is_critical=True)
+            return
         
         print(f"\nProcessing complete. Generated {len(output_rows)} output rows.")
         

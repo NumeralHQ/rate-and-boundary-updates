@@ -88,4 +88,47 @@ def get_detail_rows_from_db(conn, geocodes: list, tax_type: str, tax_cat: str, d
         
     except Exception as e:
         log_error(f"Error querying detail rows from database: {str(e)}")
-        return pd.DataFrame() 
+        return pd.DataFrame()
+
+def get_geocodes_for_new_tax(conn, criteria: pd.Series) -> list[str]:
+    """
+    Enhanced geocode lookup for new tax job type.
+    Handles:
+    - Comma-separated geocodes in 'geocode' field
+    - tax_district field filtering
+    - Dynamic criteria (state, county, city, tax_district)
+    """
+    try:
+        geocodes = []
+        
+        # 1. Handle direct geocode list from CSV
+        if pd.notna(criteria.get('geocode')) and str(criteria.get('geocode')).strip():
+            input_geocodes = [gc.strip() for gc in str(criteria['geocode']).split(',')]
+            if input_geocodes:
+                # Validate these geocodes exist in geocode table
+                placeholders = ','.join(['?' for _ in input_geocodes])
+                query = f"SELECT DISTINCT geocode FROM geocode WHERE geocode IN ({placeholders})"
+                result = conn.execute(query, input_geocodes).fetchall()
+                geocodes.extend([row[0] for row in result])
+        
+        # 2. Handle criteria-based lookup (state, county, city, tax_district)
+        filter_fields = ['state', 'county', 'city', 'tax_district']
+        where_clauses = []
+        params = []
+        
+        for field in filter_fields:
+            if field in criteria and pd.notna(criteria[field]) and str(criteria[field]).strip():
+                where_clauses.append(f"{field} = ?")
+                params.append(str(criteria[field]).strip())
+        
+        if where_clauses:
+            query = f"SELECT DISTINCT geocode FROM geocode WHERE {' AND '.join(where_clauses)}"
+            result = conn.execute(query, params).fetchall()
+            geocodes.extend([row[0] for row in result])
+        
+        # Remove duplicates and return
+        return list(set(geocodes))
+        
+    except Exception as e:
+        log_error(f"Error querying geocodes for new tax from database: {str(e)}")
+        return [] 

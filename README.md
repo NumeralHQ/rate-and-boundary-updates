@@ -62,7 +62,9 @@ python src/main.py
 ```
 
 ### Step 3: Follow Prompts
-1. You will be asked to select a job type. Enter `1` for a Rate Update.
+1. You will be asked to select a job type:
+   - Enter `1` for a Rate Update
+   - Enter `2` for a New Tax
 2. The script will find the latest applicable job file and ask for your confirmation. Enter `Y` to proceed.
 3. You will be prompted to enter an effective date:
    - Enter a specific date in MM/DD/YYYY format (e.g., `12/31/2025`)
@@ -97,6 +99,45 @@ The job file for rate updates requires the following columns. The fields `tax_ty
 
 **Note on Tax Codes**: Both `tax_type` and `tax_cat` are automatically formatted as 2-digit codes with leading zeros (e.g., 4 becomes "04"). Ensure your CSV contains the numeric values that correspond to your database schema.
 
+## Job File Format (new_tax_*.csv)
+
+The job file for new tax creation requires the following columns. The fields `tax_type`, `tax_rate`, `tax_auth_id`, and `description` are mandatory for the script to run.
+
+| Column | Description | Type | Required | Default |
+|--------|-------------|------|----------|---------|
+| geocode | Comma-separated geocodes | VARCHAR | No | From lookup |
+| state | State abbreviation | VARCHAR | No | - |
+| county | County name | VARCHAR | No | - |
+| city | City name | VARCHAR | No | - |
+| tax_district | Tax district name | VARCHAR | No | - |
+| tax_type | Tax type (required) | VARCHAR | Yes | - |
+| tax_cat | Tax category | VARCHAR | No | 01 |
+| tax_auth_id | Tax authority ID (required) | VARCHAR | Yes | - |
+| effective | Effective date (MM/DD/YYYY) | DATE | No | User input/today |
+| description | Tax description (required) | VARCHAR | Yes | - |
+| pass_flag | Pass flag | VARCHAR | No | 01 |
+| pass_type | Pass type | VARCHAR | No | (blank) |
+| base_type | Base type | VARCHAR | No | 00 |
+| date_flag | Date flag | VARCHAR | No | 02 |
+| rounding | Rounding | VARCHAR | No | 00 |
+| location | Location | VARCHAR | No | (blank) |
+| report_to | Report to | INTEGER | No | (blank) |
+| max_tax | Maximum tax | DECIMAL | No | 0 |
+| unit_type | Unit type | VARCHAR | No | 99 |
+| max_type | Maximum type | VARCHAR | No | 99 |
+| thresh_type | Threshold type | VARCHAR | No | 09 |
+| unit_and_or_tax | Unit and/or tax | VARCHAR | No | (blank) |
+| formula | Formula | VARCHAR | No | 01 |
+| tier | Tier | INTEGER | No | 0 |
+| tax_rate | Tax rate (required) | DECIMAL | Yes | - |
+| min_tax_base | Minimum tax base | DECIMAL | No | 0 |
+| max_tax_base | Maximum tax base | DECIMAL | No | 0 |
+| fee | Fee | DECIMAL | No | 0 |
+| min_unit_base | Minimum unit base | DECIMAL | No | 0 |
+| max_unit_base | Maximum unit base | DECIMAL | No | 0 |
+
+**Note on New Tax Processing**: The new tax job creates detail table records for each geocode found based on the location criteria. Multiple output rows may be generated from a single input row if multiple geocodes match the criteria.
+
 ## Output File Format
 
 The generated output CSV file contains a `status` column as the first column, followed by all columns from the detail table with updated values.
@@ -116,11 +157,14 @@ The generated output CSV file contains a `status` column as the first column, fo
 
 ## Features
 
+- **Multiple Job Types**: Supports Rate Update and New Tax creation workflows
 - **Interactive CLI**: Guides users through job selection and confirmation
 - **Custom Effective Dates**: Users can specify exact effective dates or use today's date
 - **Automatic File Discovery**: Finds the latest job file based on date in filename
 - **Dynamic Database Queries**: Handles incomplete location data gracefully
-- **Rate Validation**: Warns when old rates don't match database values
+- **Advanced Geocode Lookup**: Supports comma-separated geocodes and tax_district filtering
+- **Rate Validation**: Warns when old rates don't match database values (Rate Update)
+- **Field Defaulting**: Applies intelligent defaults for missing fields (New Tax)
 - **Comprehensive Logging**: Tracks warnings and errors for audit trails
 - **Timestamped Output**: Each run creates a unique output folder
 - **Safe Operation**: Never writes directly to the database
@@ -176,13 +220,25 @@ CREATE TABLE detail (
 
 ## Example Usage
 
+### Rate Update Job
 1. Place a job file like `rate_update_250627.csv` in the `/job` directory
 2. Run `python src/main.py`
 3. Select option `1` for Rate Update
 4. Confirm processing when prompted
-5. Review the generated output files in the timestamped folder
-6. Check the `status` column in the output CSV to identify any issues with specific rows
-7. Use `errors.json` for detailed debugging information if needed
+5. Enter effective date or use default
+6. Review the generated output files in the timestamped folder
+
+### New Tax Job
+1. Place a job file like `new_tax_250627.csv` in the `/job` directory
+2. Run `python src/main.py`
+3. Select option `2` for New Tax
+4. Confirm processing when prompted
+5. Enter effective date (used only if not specified in job file)
+6. Review the generated output files in the timestamped folder
+
+### Output Review
+- Check the `status` column in the output CSV to identify any issues with specific rows
+- Use `errors.json` for detailed debugging information if needed
 
 ## Future Enhancements
 
