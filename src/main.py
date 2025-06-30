@@ -290,6 +290,167 @@ def process_new_tax_job(db_connection, job_df: pd.DataFrame, effective_date: dat
     
     return output_rows
 
+# --- Authority Processing Helper Functions ---
+def detect_authority_level(row: pd.Series) -> str:
+    """
+    Detect the lowest level of jurisdiction provided.
+    Returns: 'country', 'state', 'county', 'city', or 'district'
+    """
+    hierarchy = ['district', 'city', 'county', 'state', 'country']
+    
+    for level in hierarchy:
+        if pd.notna(row.get(level)) and str(row.get(level)).strip():
+            return level
+    
+    # Default to country if nothing provided
+    return 'country'
+
+def generate_authority_name(row: pd.Series, auth_level: str) -> str:
+    """
+    Generate authority name based on level and formatting rules.
+    All text values are converted to uppercase and trimmed of whitespace.
+    """
+    if auth_level == 'country':
+        country_val = row.get('country', 'US')
+        return str(country_val).upper().strip() if pd.notna(country_val) else 'US'
+    elif auth_level == 'state':
+        state_val = row.get('state')
+        if pd.notna(state_val) and str(state_val).strip():
+            return f"{str(state_val).upper().strip()}, STATE OF"
+        else:
+            return "STATE OF"
+    elif auth_level == 'county':
+        county_val = row.get('county')
+        if pd.notna(county_val) and str(county_val).strip():
+            return f"{str(county_val).upper().strip()}, COUNTY OF"
+        else:
+            return "COUNTY OF"
+    elif auth_level == 'city':
+        city_val = row.get('city')
+        if pd.notna(city_val) and str(city_val).strip():
+            return f"{str(city_val).upper().strip()}, CITY OF"
+        else:
+            return "CITY OF"
+    elif auth_level == 'district':
+        district_val = row.get('district')
+        city_val = row.get('city')
+        county_val = row.get('county')
+        
+        # Check if district value exists
+        if not (pd.notna(district_val) and str(district_val).strip()):
+            return "DISTRICT"
+        
+        district_name = str(district_val).upper().strip()
+        
+        # Priority 1: City if available
+        if pd.notna(city_val) and str(city_val).strip():
+            city_name = str(city_val).upper().strip()
+            return f"CITY OF {city_name}, {district_name}"
+        
+        # Priority 2: County as fallback
+        elif pd.notna(county_val) and str(county_val).strip():
+            county_name = str(county_val).upper().strip()
+            # Don't add "COUNTY" if it already exists in the name
+            if "COUNTY" in county_name:
+                return f"{county_name}, {district_name}"
+            else:
+                return f"{county_name} COUNTY, {district_name}"
+        
+        # Priority 3: District only (warning will be added in validation)
+        else:
+            return district_name
+    
+    return ""
+
+def validate_authority_fields(row: pd.Series, auth_level: str) -> list:
+    """Generate list of warnings for authority record."""
+    warnings = []
+    
+    # Check country default
+    if pd.isna(row.get('country')) or not str(row.get('country')).strip():
+        warnings.append("Warning: defaulted country to US")
+    
+    # Check state requirement for non-country authorities
+    if auth_level != 'country':
+        if pd.isna(row.get('state')) or not str(row.get('state')).strip():
+            warnings.append("Warning: missing state for non-country authority")
+    
+    # Check district-specific requirements
+    if auth_level == 'district':
+        city_val = row.get('city')
+        county_val = row.get('county')
+        
+        # Warning if neither city nor county provided for district
+        if not ((pd.notna(city_val) and str(city_val).strip()) or 
+                (pd.notna(county_val) and str(county_val).strip())):
+            warnings.append("Warning: missing city or county for district authority")
+    
+    return warnings
+
+def process_new_authority_job(db_connection, job_df: pd.DataFrame) -> list:
+    """
+    Process new authority job with authority level detection and sequential ID assignment.
+    Returns list of output rows with status tracking.
+    """
+    output_rows = []
+    
+    print("\nProcessing rows...")
+    
+    # Get starting tax_auth_id from database
+    starting_id = db_handler.get_next_tax_auth_id(db_connection)
+    if starting_id is None:
+        return output_rows  # Error already logged as critical
+    
+    current_id = starting_id
+    
+    for index, job_row in job_df.iterrows():
+        row_number = index + 1
+        print(f"Processing row {row_number}/{len(job_df)}", end="\r")
+        
+        # Detect authority level
+        auth_level = detect_authority_level(job_row)
+        
+        # Validate fields and get warnings
+        warnings = validate_authority_fields(job_row, auth_level)
+        
+        # Create new authority row
+        new_row = {}
+        
+        # Set tax_auth_id (sequential)
+        new_row['tax_auth_id'] = str(current_id)
+        current_id += 1
+        
+        # Set country (with default) - ensure uppercase and trimmed
+        country_value = job_row.get('country')
+        if pd.notna(country_value) and str(country_value).strip():
+            new_row['country'] = str(country_value).upper().strip()
+        else:
+            new_row['country'] = 'US'  # Default already uppercase
+        
+        # Set state - ensure uppercase and trimmed
+        state_value = job_row.get('state')
+        if pd.notna(state_value) and str(state_value).strip():
+            new_row['state'] = str(state_value).upper().strip()
+        else:
+            new_row['state'] = ''  # Empty string for missing state
+        
+        # Generate authority name
+        new_row['authority_name'] = generate_authority_name(job_row, auth_level)
+        
+        # Set tax_auth_type based on level
+        new_row['tax_auth_type'] = config.AUTHORITY_TYPE_MAPPING[auth_level]
+        
+        # Set status based on warnings
+        if warnings:
+            new_row['status'] = '\n'.join(warnings)
+        else:
+            new_row['status'] = 'Success'
+        
+        # Append the new row to output list
+        output_rows.append(new_row)
+    
+    return output_rows
+
 # --- Main Application Logic ---
 def run():
     db_connection = None
@@ -332,13 +493,16 @@ def run():
             print("Job cancelled by user.")
             return
         
-        # Get effective date from user
-        effective_date = get_effective_date_from_user()
-        if effective_date is None:
-            print("Job cancelled due to invalid date input.")
-            return
+        # Get effective date from user (skip for new_authority)
+        effective_date = None
+        if job_prefix != "new_authority":
+            effective_date = get_effective_date_from_user()
+            if effective_date is None:
+                print("Job cancelled due to invalid date input.")
+                return
+            
+            print(f"Using effective date: {effective_date.strftime('%m/%d/%Y')}")
         
-        print(f"Using effective date: {effective_date.strftime('%m/%d/%Y')}")
         print("\nProcessing job...")
         
         # 4. Setup:
@@ -373,6 +537,8 @@ def run():
             output_rows = process_rate_update_job(db_connection, job_df, effective_date)
         elif job_prefix == "new_tax":
             output_rows = process_new_tax_job(db_connection, job_df, effective_date)
+        elif job_prefix == "new_authority":
+            output_rows = process_new_authority_job(db_connection, job_df)
         else:
             logger.log_error(f"Unsupported job type: {job_prefix}", is_critical=True)
             return
@@ -384,9 +550,15 @@ def run():
             # Convert the list of output rows into a pandas DataFrame
             output_df = pd.DataFrame(output_rows)
             
+            # Use appropriate schema for CSV output
+            if job_prefix == "new_authority":
+                schema = config.TAX_AUTHORITY_SCHEMA
+            else:
+                schema = config.DETAIL_TABLE_SCHEMA
+            
             # Write it to CSV using file_handler
             output_file_path = os.path.join(output_dir, f"{job_prefix}_output.csv")
-            file_handler.write_dataframe_to_csv(output_file_path, output_df, config.DETAIL_TABLE_SCHEMA)
+            file_handler.write_dataframe_to_csv(output_file_path, output_df, schema)
             print(f"Output saved to: {output_file_path}")
         
         # If any logs were generated, write them to errors.json
@@ -399,7 +571,7 @@ def run():
         # 7. Report to User: Print a summary of the job completion
         print_summary(output_dir, len(job_df), len(output_rows), 
                      logger.count_rows_with_warnings(), logger.count_rows_with_errors(),
-                     logger.count_warnings(), logger.count_errors(), effective_date)
+                     logger.count_warnings(), logger.count_errors(), effective_date, job_prefix)
         
     except SystemExit as e:
         # This is raised by log_error(is_critical=True)
@@ -432,7 +604,7 @@ def run():
 
 def print_summary(output_path: str, processed_rows: int, added_rows: int, 
                  rows_with_warnings: int, rows_with_errors: int,
-                 total_warnings: int, total_errors: int, effective_date: datetime.datetime):
+                 total_warnings: int, total_errors: int, effective_date: datetime.datetime, job_prefix: str):
     """Print a summary of the job execution."""
     print("\n" + "=" * 50)
     print("JOB COMPLETE")
@@ -440,7 +612,10 @@ def print_summary(output_path: str, processed_rows: int, added_rows: int,
     print(f"Output Path: {output_path}")
     print(f"- {processed_rows} rows processed from the job file.")
     print(f"- {added_rows} new rows added to output CSV.")
-    print(f"- Effective date applied: {effective_date.strftime('%m/%d/%Y')}")
+    
+    # Show effective date only for jobs that use it
+    if effective_date and job_prefix != "new_authority":
+        print(f"- Effective date applied: {effective_date.strftime('%m/%d/%Y')}")
     
     # Calculate percentages
     if processed_rows > 0:

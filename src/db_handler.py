@@ -131,4 +131,30 @@ def get_geocodes_for_new_tax(conn, criteria: pd.Series) -> list[str]:
         
     except Exception as e:
         log_error(f"Error querying geocodes for new tax from database: {str(e)}")
-        return [] 
+        return []
+
+def get_next_tax_auth_id(conn) -> int:
+    """
+    Get the next sequential tax_auth_id by finding the maximum existing ID.
+    Returns starting ID for new authority records.
+    Filters out NULL values, empty strings, and non-numeric values before casting.
+    """
+    try:
+        # Filter out NULL, empty strings, and non-numeric values before casting
+        query = """
+        SELECT MAX(CAST(tax_auth_id AS INTEGER)) 
+        FROM tax_authority 
+        WHERE tax_auth_id IS NOT NULL 
+          AND tax_auth_id != '' 
+          AND tax_auth_id ~ '^[0-9]+$'
+        """
+        result = conn.execute(query).fetchone()
+        
+        if result and result[0] is not None:
+            return int(result[0]) + 1
+        else:
+            return 1  # Start at 1 if no valid numeric records exist
+            
+    except Exception as e:
+        log_error(f"Error getting next tax authority ID: {str(e)}", is_critical=True)
+        return None 

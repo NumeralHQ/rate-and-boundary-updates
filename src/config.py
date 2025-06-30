@@ -21,8 +21,8 @@ JOB_TYPE_MAPPING = {
         "file_prefix": "new_tax"
     },
     "3": {
-        "name": "New Jurisdiction",
-        "file_prefix": "new_jurisdiction"
+        "name": "New Authority",
+        "file_prefix": "new_authority"
     },
     "4": {
         "name": "Jurisdiction Update",
@@ -66,3 +66,28 @@ NEW_TAX_DEFAULTS = {
 }
 
 NEW_TAX_REQUIRED_FIELDS = ['tax_type', 'tax_rate', 'tax_auth_id', 'description'] 
+
+# --- Authority Configuration ---
+# Authority hierarchy and formatting rules
+AUTHORITY_HIERARCHY = ['country', 'state', 'county', 'city', 'district']
+
+AUTHORITY_TYPE_MAPPING = {
+    'country': '0',
+    'state': '1', 
+    'county': '2',
+    'city': '3',
+    'district': '4'
+}
+
+AUTHORITY_NAME_FORMATS = {
+    'country': '{country}',
+    'state': '{state}, STATE OF',
+    'county': '{county}, COUNTY OF', 
+    'city': '{city}, CITY OF',
+    'district': '{parent}, {district}'  # parent = city or county (lowest non-null)
+}
+
+# Tax authority table schema for output
+TAX_AUTHORITY_SCHEMA = [
+    'status', 'tax_auth_id', 'country', 'state', 'authority_name', 'tax_auth_type'
+] 
