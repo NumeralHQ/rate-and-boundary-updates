@@ -156,8 +156,8 @@ def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date:
             # Create a copy of the detail_row and update fields
             new_row = detail_row.copy()
             
-            # Set 'effective' to the user-specified date in the correct format: 'YYYY-MM-DD 00:00:00.000'
-            new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+            # Set 'effective' to the user-specified date in the correct format: 'YYYY-MM-DD'
+            new_row['effective'] = effective_date.strftime('%Y-%m-%d')
             
             # Set 'tax_rate' to job_row['new_rate'] / 100
             # Note: new_rate is already validated as non-null in the required fields check
@@ -241,14 +241,14 @@ def process_new_tax_job(db_connection, job_df: pd.DataFrame, effective_date: dat
                             # Parse CSV date - assume MM/DD/YYYY format like user input
                             csv_date_str = str(job_row['effective']).strip()
                             parsed_date = datetime.datetime.strptime(csv_date_str, '%m/%d/%Y')
-                            new_row['effective'] = parsed_date.strftime('%Y-%m-%d 00:00:00.000')
+                            new_row['effective'] = parsed_date.strftime('%Y-%m-%d')
                         except ValueError:
                             # If can't parse CSV date, use user provided date and add warning
-                            new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+                            new_row['effective'] = effective_date.strftime('%Y-%m-%d')
                             status_issues.append("Warning: invalid effective date format")
                     else:
                         # Use user provided effective date (no warning per user request)
-                        new_row['effective'] = effective_date.strftime('%Y-%m-%d 00:00:00.000')
+                        new_row['effective'] = effective_date.strftime('%Y-%m-%d')
                 elif field in job_row and pd.notna(job_row[field]):
                     # Use value from job CSV
                     value = job_row[field]
