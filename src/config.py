@@ -6,7 +6,7 @@ import os
 # Assume the script is run from the root `tax_data_utility/` directory.
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # This should resolve to the project root
 
-DATABASE_PATH = r"C:\Users\Gregg\Documents\tax_db_tables\tax_database.duckdb"
+DATABASE_PATH = r"C:\Users\Gregg\Documents\tax_db_tables\duckdb\20250701\tax_rates.duckdb"
 JOB_FOLDER = os.path.join(BASE_DIR, "job")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
 

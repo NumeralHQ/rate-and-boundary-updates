@@ -79,6 +79,16 @@ def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date:
                             {"row_number": row_number, "row_data": job_row.to_dict()})
             continue
         
+        if pd.isna(job_row.get('old_fee')):
+            logger.log_error(f"Row {row_number}: Missing required field 'old_fee'. Skipping.", 
+                            {"row_number": row_number, "row_data": job_row.to_dict()})
+            continue
+
+        if pd.isna(job_row.get('new_fee')):
+            logger.log_error(f"Row {row_number}: Missing required field 'new_fee'. Skipping.", 
+                            {"row_number": row_number, "row_data": job_row.to_dict()})
+            continue
+        
         # Get list of geocodes from db_handler.
         geocodes = db_handler.get_geocodes_from_db(db_connection, job_row)
         
@@ -94,14 +104,26 @@ def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date:
         tax_cat_raw = job_row['tax_cat']
         
         if pd.notna(tax_type_raw):
-            # Convert to string and pad with leading zero if needed
-            tax_type_formatted = str(int(tax_type_raw)).zfill(2)
+            # Handle both numeric and alphanumeric tax_type values
+            try:
+                # Try converting to int first (for numeric values like 4 -> "04")
+                tax_type_formatted = str(int(tax_type_raw)).zfill(2)
+            except (ValueError, TypeError):
+                # For non-numeric values (like 'FF'), use as string and ensure 2 characters
+                tax_type_str = str(tax_type_raw).strip().upper()
+                tax_type_formatted = tax_type_str.zfill(2)[:2]  # Pad if needed, truncate if too long
         else:
             tax_type_formatted = ""
         
         if pd.notna(tax_cat_raw):
-            # Convert to string and pad with leading zero if needed
-            tax_cat_formatted = str(int(tax_cat_raw)).zfill(2)
+            # Handle both numeric and alphanumeric tax_cat values
+            try:
+                # Try converting to int first (for numeric values like 1 -> "01")
+                tax_cat_formatted = str(int(tax_cat_raw)).zfill(2)
+            except (ValueError, TypeError):
+                # For non-numeric values (like 'FF'), use as string and ensure 2 characters
+                tax_cat_str = str(tax_cat_raw).strip().upper()
+                tax_cat_formatted = tax_cat_str.zfill(2)[:2]  # Pad if needed, truncate if too long
         else:
             tax_cat_formatted = ""
         
@@ -153,6 +175,34 @@ def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date:
                     # Add to status for this output row
                     status_issues.append("Warning: failed to compare rates")
             
+            # Fee Validation: Compare job_row['old_fee'] with detail_row['fee']
+            if pd.notna(job_row.get('old_fee')):
+                try:
+                    csv_old_fee = Decimal(str(job_row['old_fee']))
+                    db_fee = Decimal(str(detail_row['fee']))
+                    
+                    if csv_old_fee != db_fee:
+                        # Log to errors.json as before
+                        logger.log_warning(
+                            f"Row {row_number}: Fee mismatch for geocode {detail_row['geocode']}. "
+                            f"CSV old_fee: {csv_old_fee}, DB fee: {db_fee}",
+                            {
+                                "row_number": row_number,
+                                "geocode": detail_row['geocode'],
+                                "csv_old_fee": float(csv_old_fee),
+                                "db_fee": float(db_fee)
+                            }
+                        )
+                        # Add to status for this output row
+                        status_issues.append("Warning: fee mismatch")
+                        
+                except (ValueError, TypeError) as e:
+                    # Log to errors.json as before
+                    logger.log_warning(f"Row {row_number}: Error when comparing fees: {str(e)}", 
+                                       {"row_number": row_number, "error": str(e)})
+                    # Add to status for this output row
+                    status_issues.append("Warning: failed to compare fees")
+            
             # Create a copy of the detail_row and update fields
             new_row = detail_row.copy()
             
@@ -170,6 +220,25 @@ def process_rate_update_job(db_connection, job_df: pd.DataFrame, effective_date:
                                  {"row_number": row_number, "new_rate": job_row.get('new_rate'), "error": str(e)})
                 # Add to status for this output row
                 status_issues.append("Error: invalid new_rate")
+                continue
+            
+            # Set 'fee' to job_row['new_fee']
+            # Note: new_fee is already validated as non-null in the required fields check
+            try:
+                new_fee_decimal = Decimal(str(job_row['new_fee']))
+                
+                # Validate fee is non-negative
+                if new_fee_decimal < 0:
+                    logger.log_error(f"Row {row_number}: Fee cannot be negative: {job_row.get('new_fee')}", 
+                                     {"row_number": row_number, "new_fee": job_row.get('new_fee')})
+                    status_issues.append("Error: negative fee not allowed")
+                    continue
+                
+                new_row['fee'] = float(new_fee_decimal)
+            except (ValueError, TypeError) as e:
+                logger.log_error(f"Row {row_number}: Invalid new_fee value: {job_row.get('new_fee')}", 
+                                 {"row_number": row_number, "new_fee": job_row.get('new_fee'), "error": str(e)})
+                status_issues.append("Error: invalid new_fee")
                 continue
             
             # Set status based on issues encountered
@@ -257,9 +326,12 @@ def process_new_tax_job(db_connection, job_df: pd.DataFrame, effective_date: dat
                     if field in ['tax_type', 'tax_cat', 'pass_flag', 'base_type', 'date_flag', 
                                 'rounding', 'unit_type', 'max_type', 'thresh_type', 'formula']:
                         try:
+                            # Try converting to int first (for numeric values like 4 -> "04")
                             new_row[field] = str(int(value)).zfill(2)
                         except (ValueError, TypeError):
-                            new_row[field] = str(value).zfill(2)
+                            # For non-numeric values (like 'FF'), use as string and ensure 2 characters
+                            field_str = str(value).strip().upper()
+                            new_row[field] = field_str.zfill(2)[:2]  # Pad if needed, truncate if too long
                     elif field == 'tax_rate':
                         # Convert percentage to decimal
                         try:

@@ -6,6 +6,10 @@ __pycache__/
 # Output
 /output/*
 
+# Jobs
+/job/*
+/table_updates/*
+
 # IDE / OS
 .DS_Store
 .vscode/ 
