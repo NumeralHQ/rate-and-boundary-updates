@@ -19,13 +19,26 @@ rate-and-boundary-updates/
 │   └── 250627-114530_job/          # Timestamped output folders are created here
 │       ├── rate_update_output.csv
 │       └── errors.json
-└── src/
-    ├── __init__.py
-    ├── main.py                     # Main script entry point
-    ├── config.py                   # Configuration constants
-    ├── db_handler.py               # Database connection and queries
-    ├── file_handler.py             # File I/O operations
-    └── logger.py                   # Error and warning logging
+├── src/
+│   ├── __init__.py
+│   ├── main.py                     # Main script entry point
+│   ├── config.py                   # Configuration constants
+│   ├── db_handler.py               # Database connection and queries
+│   ├── file_handler.py             # File I/O operations
+│   └── logger.py                   # Error and warning logging
+└── table_updates/                  # Table update functionality
+    ├── table_updater.py            # Table update script
+    ├── filtering_criteria.json     # Table filtering configuration
+    ├── tests/                      # Test suite
+    │   ├── __init__.py
+    │   ├── test_complete_table_update.py
+    │   ├── test_dry_run.py
+    │   └── test_error_handling.py
+    └── 250801_update/              # Example timestamped job folder
+        ├── detail_append_1.csv
+        ├── product_item_update_1.csv
+        ├── errors.json             # Generated error log
+        └── tax_db_250801.duckdb    # Generated database copy
 ```
 
 ## Prerequisites
@@ -321,15 +334,218 @@ CREATE TABLE tax_authority (
 - Check the `status` column in the output CSV to identify any issues with specific rows
 - Use `errors.json` for detailed debugging information if needed
 
+## Table Update Functionality
+
+### Overview
+
+The Tax Data Update Utility now includes a powerful table update feature that processes CSV files to directly update or append data to existing DuckDB tables. This functionality is designed for bulk operations on tax database tables with comprehensive error handling and validation.
+
+**Location**: `table_updates/table_updater.py`
+
+### Key Features
+
+- **Schema Validation**: Automatically validates CSV field names against target table schemas
+- **Dual Operation Modes**: Supports both append and update operations
+- **Batch Processing**: Optimized for large CSV files with chunked processing
+- **Error Recovery**: Continues processing even when individual files fail
+- **Comprehensive Logging**: Detailed error tracking in JSON format
+- **Dry Run Mode**: Validate operations without making actual changes
+- **Performance Optimized**: Uses DuckDB native CSV import for maximum speed
+- **Schema-Based Type Mapping**: Consults database schema for authoritative data type handling
+- **Excel Date Auto-Correction**: Automatically converts Excel date formats (M/D/YYYY) to database format (YYYY-MM-DD)
+- **Intelligent Type Conversion**: Preserves data formatting (e.g., zero-padded codes) based on database column types
+
+### Advanced Data Handling
+
+#### Schema-Based Type Mapping
+The table updater now uses the **database schema as the single source of truth** for data type handling:
+- **VARCHAR/CHAR columns**: Automatically preserved as strings to maintain formatting (e.g., `"004"` stays `"004"`)
+- **INTEGER columns**: Converted to nullable Int64 for proper handling
+- **FLOAT/DECIMAL columns**: Converted to float64 with appropriate precision
+- **DATE columns**: Handled as strings with automatic format conversion
+
+#### Excel Date Format Auto-Correction
+Automatically handles Excel's date format corruption:
+- **Input**: `7/1/2025` (Excel's M/D/YYYY format)
+- **Output**: `2025-07-01` (Database-compatible YYYY-MM-DD format)
+- **Supported formats**: M/D/YYYY, MM/DD/YYYY, YYYY/M/D, YYYY-MM-DD (unchanged)
+- **Error handling**: Invalid dates are logged but processing continues
+
+#### Consistent Data Integrity
+- **Unified processing**: Same type handling logic for both append and update operations
+- **Zero-padding preservation**: Item codes like `"004"` maintain their leading zeros
+- **Empty string handling**: Properly converted to NULL values for database insertion
+- **Type conversion errors**: Gracefully handled with detailed error logging
+
+### File Structure Requirements
+
+The table updater expects a specific directory structure:
+
+```
+table_updates/
+├── table_updater.py          # Main script
+├── filtering_criteria.json   # Table filtering configuration
+└── {YYMMDD}_update/          # Timestamped job folders
+    ├── {table}_{operation}_{seq}.csv  # CSV files to process
+    ├── errors.json           # Generated error log
+    └── tax_db_{YYMMDD}.duckdb # Generated database copy
+```
+
+### CSV File Naming Convention
+
+CSV files must follow the naming pattern: `{table_name}_{job_type}_{sequential_number}.csv`
+
+- **table_name**: Exact name of the target table in the database (e.g., `detail`, `product_item`, `matrix`)
+- **job_type**: Either `append` or `update`
+- **sequential_number**: Numeric identifier to prevent filename conflicts
+
+**Examples**:
+- `detail_append_1.csv` - Appends new records to the detail table
+- `product_item_update_1.csv` - Updates existing records in the product_item table
+- `matrix_append_2.csv` - Second append file for the matrix table
+
+### Operation Types
+
+#### Append Operations
+- **Purpose**: Add new records to existing tables
+- **Behavior**: All CSV rows are inserted as new records
+- **Performance**: Uses DuckDB's native CSV import for maximum speed
+- **Validation**: Schema validation ensures CSV columns match table structure
+
+#### Update Operations
+- **Purpose**: Modify existing records or add new ones if no match found
+- **Behavior**: Uses filtering criteria to identify matching records
+  - **Single Match**: Updates the existing record
+  - **No Match**: Inserts as new record
+  - **Multiple Matches**: Logs error and skips record
+- **Filtering**: Based on `filtering_criteria.json` configuration
+
+### Filtering Criteria Configuration
+
+The `filtering_criteria.json` file defines which fields are used to identify matching records for update operations:
+
+```json
+{
+    "detail": {
+        "filter_fields": ["geocode", "tax_type", "tax_cat", "tax_auth_id", "effective"]
+    },
+    "product_item": {
+        "filter_fields": ["group", "item"]
+    },
+    "matrix": {
+        "filter_fields": ["geocode", "group", "item", "tax_type", "tax_cat", "customer", "provider"]
+    }
+}
+```
+
+### Usage
+
+#### Basic Commands
+
+```bash
+# Process the latest timestamped folder
+python table_updates/table_updater.py
+
+# Dry run to validate without making changes
+python table_updates/table_updater.py --dry-run
+
+# Process a specific folder
+python table_updates/table_updater.py --job-folder table_updates/250801_update
+```
+
+#### Workflow Steps
+
+1. **Prepare CSV Files**: Create properly named CSV files with correct schemas
+2. **Create Job Folder**: Place files in a timestamped folder (`YYMMDD_update`)
+3. **Run Script**: Execute the table updater (optionally with --dry-run first)
+4. **Review Results**: Check console output and `errors.json` for any issues
+5. **Verify Database**: The updated database is saved as `tax_db_{YYMMDD}.duckdb`
+
+### Error Handling
+
+The system provides comprehensive error tracking:
+
+#### Error Types
+- Invalid CSV file naming format
+- CSV schema validation failures (field name mismatches)
+- Missing filtering criteria for update operations
+- Multiple record matches during updates
+- Database connection/transaction failures
+- CSV parsing errors
+- Data type conversion failures (with fallback to string types)
+- Date format conversion issues (invalid date formats)
+- Database insertion errors due to type mismatches
+
+#### Error Log Format
+
+Errors are logged to `errors.json` in the job folder:
+
+```json
+{
+    "timestamp": "2025-01-15T10:30:00Z",
+    "total_errors": 2,
+    "errors": [
+        {
+            "file": "product_item_update_1.csv",
+            "error": "CSV schema validation failed",
+            "table": "product_item",
+            "missing_fields": ["invalid_column"],
+            "csv_fields": ["group", "item", "description", "invalid_column"],
+            "table_fields": ["group", "item", "description"]
+        },
+        {
+            "file": "detail_update_1.csv",
+            "row": 5,
+            "error": "Multiple matching records found",
+            "filter_fields": ["geocode", "tax_type"],
+            "filter_values": {"geocode": "US123", "tax_type": "04"},
+            "match_count": 3
+        }
+    ]
+}
+```
+
+### Performance Considerations
+
+- **Large Files**: The system uses chunked processing (1000 rows per chunk) for optimal memory usage
+- **Append Operations**: Leverages DuckDB's native `read_csv_auto()` for maximum speed
+- **Update Operations**: Batch processes records while maintaining transaction integrity
+- **Memory Efficient**: Processes files incrementally rather than loading everything into memory
+
+### Best Practices
+
+1. **Always Use Dry Run First**: Validate your files with `--dry-run` before actual processing
+2. **Schema Validation**: Ensure CSV columns exactly match target table columns
+3. **Excel Date Handling**: The system automatically corrects Excel date formats, but be aware of potential corruption when opening CSV files in Excel
+4. **Backup Strategy**: The script creates database copies, but maintain separate backups
+5. **Error Review**: Always check `errors.json` after processing for any issues
+6. **File Organization**: Use clear, descriptive sequential numbers for multiple files
+7. **Data Type Consistency**: Let the system handle data types automatically based on database schema
+
+### Dependencies
+
+The table updater requires:
+- `pandas>=1.5.0` - For CSV processing
+- `duckdb>=0.9.0` - For database operations
+
+### Integration with Existing Workflow
+
+The table updater complements the existing tax data utility:
+- **Existing Tool**: Generates CSV files for manual review and import
+- **Table Updater**: Automates the import process with validation and error handling
+- **Combined Use**: Generate updates with the main tool, then process with the table updater
+
 ## Future Enhancements
 
 - Additional job types (New Jurisdiction, Jurisdiction Update)
+- Enhanced table updater features (parallel processing, web interface)
 - Batch processing capabilities
 - Enhanced validation rules
 - GUI interface option
 
 ## Troubleshooting
 
+### General Issues
 - **Database Connection Issues**: Verify the database path in `src/config.py`
 - **Job File Not Found**: Ensure the file follows the naming convention:
   - `rate_update_YYMMDD.csv` for Rate Update jobs
@@ -338,3 +554,13 @@ CREATE TABLE tax_authority (
 - **Permission Errors**: Ensure write permissions to the `/output` directory
 - **Import Errors**: Verify all dependencies are installed via `pip install -r requirements.txt`
 - **Authority ID Issues**: Ensure the tax_authority table exists and contains valid numeric tax_auth_id values
+
+### Table Updater Issues
+- **No Update Folders Found**: Create a timestamped folder in `table_updates/` following the `YYMMDD_update` format
+- **Schema Validation Failures**: Ensure CSV column names exactly match target table column names (case-insensitive)
+- **Missing Filtering Criteria**: Add the target table to `filtering_criteria.json` with appropriate filter fields
+- **File Permission Errors**: Ensure write permissions to the job folder for database copy and error log creation
+- **Multiple Match Errors**: Review filter fields in `filtering_criteria.json` to ensure they uniquely identify records
+- **CSV Parsing Errors**: Verify CSV files are properly formatted and don't contain corrupted data
+- **Database Copy Issues**: Ensure the source database path in `config.py` is correct and accessible
+- **Large File Processing**: For very large files (>100k rows), consider splitting into smaller files for better error tracking

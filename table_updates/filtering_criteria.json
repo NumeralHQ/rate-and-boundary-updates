@@ -1,0 +1,20 @@
+{
+    "detail": {
+        "filter_fields": ["geocode","tax_type","tax_cat","tax_auth_id","effective"]
+    },
+    "tax_type": {
+        "filter_fields": ["tax_type"]
+    },
+    "tax_cat": {
+        "filter_fields": ["tax_cat"]
+    },
+    "product_item": {
+        "filter_fields": ["group","item"]
+    },
+    "product_group": {
+        "filter_fields": ["group"]
+    },
+    "matrix": {
+        "filter_fields": ["geocode","group","item","tax_type","tax_cat","customer","provider"]
+    }
+}
